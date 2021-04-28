@@ -75,7 +75,9 @@ globparm_t global={
   query_port_start:  1024,
   query_port_end:    65535,
   udpbufsize:        1024,
-  deleg_only_zones:  NULL
+  deleg_only_zones:  NULL,
+  reply_ghost_cache: 1,
+  ghost_cache_ttl:   0
 };
 
 servparm_t serv_presets={

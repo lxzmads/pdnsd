@@ -3514,29 +3514,53 @@ static int p_dns_cached_resolve(query_stat_array q, const unsigned char *name, i
 		}
 	}
 	if (rc!=RC_CACHED) {
-		dns_cent_t *ent;
-		DEBUG_MSG("Trying name servers.\n");
-		if (q)
-			rc=p_recursive_query(q,name,thint, &ent,NULL,hops,qslist,qhlist,c_soa);
-		else
-			rc=p_dns_resolve(name,thint, &ent,hops,qhlist,c_soa);
-
-		if(rc==RC_OK || rc==RC_CACHED || rc==RC_STALE) {
-			if (cached) {
-				free_cent(cached  DBG1);
-				pdnsd_free(cached);
-			}
-			cached=ent;
-		}
-		else if (rc==RC_SERVFAIL && cached && (flags&CF_NOPURGE)) {
-			/* We could not get a new record, but we have a timed-out cached one
-			   with the nopurge flag set. This means that we shall use it even
-			   if timed out when no new one is available*/
-			DEBUG_MSG("Falling back to cached record.\n");
-			rc=RC_STALE;
-		}
-		else
-			goto cleanup_return;
+        if(global.reply_ghost_cache) {
+            #ifndef REPLY_GHOST_CACHE_H
+            #define REPLY_GHOST_CACHE_H
+            #endif
+        }
+#ifdef REPLY_GHOST_CACHE_H
+    pid_t pid = fork();
+    if(pid == 0){
+#endif
+        dns_cent_t *ent;
+        DEBUG_MSG("Trying name servers.\n");
+        if (q)
+            rc=p_recursive_query(q,name,thint, &ent,NULL,hops,qslist,qhlist,c_soa);
+        else
+            rc=p_dns_resolve(name,thint, &ent,hops,qhlist,c_soa);
+#ifdef REPLY_GHOST_CACHE_H
+        if (cached) {
+            free_cent(cached  DBG1);
+            pdnsd_free(cached);
+        }
+        exit(1);
+#endif
+        if(rc==RC_OK || rc==RC_CACHED || rc==RC_STALE) {
+            if (cached) {
+                free_cent(cached  DBG1);
+                pdnsd_free(cached);
+            }
+            cached=ent;
+        }
+        else if (rc==RC_SERVFAIL && cached && (flags&CF_NOPURGE)) {
+            /* We could not get a new record, but we have a timed-out cached one
+            with the nopurge flag set. This means that we shall use it even
+            if timed out when no new one is available*/
+            DEBUG_MSG("Falling back to cached record.\n");
+            rc=RC_STALE;
+        }
+        else
+            goto cleanup_return;
+#ifdef REPLY_GHOST_CACHE_H
+    }else if(pid < 0){
+        DEBUG_MSG("fork() error.\n");
+        rc=RC_SERVFAIL;
+		goto cleanup_return;
+    }
+    rc=RC_CACHED;
+    
+#endif
 	} else {
 		DEBUG_MSG("Using cached record.\n");
 	}
