@@ -45,6 +45,7 @@
 #include "netdev.h"
 #include "error.h"
 #include "debug.h"
+#include "thread.h"
 
 
 #if defined(NO_TCP_QUERIES) && M_PRESET!=UDP_ONLY
@@ -173,7 +174,6 @@ static volatile unsigned long poll_errs=0;
 #endif
 
 typedef DYNAMIC_ARRAY(dns_cent_t) *dns_cent_array;
-
 
 /*
  * Take the data from an RR and add it to an array of cache entries.
@@ -1384,6 +1384,7 @@ static int p_exec_query(dns_cent_t **entp, const unsigned char *name, int thint,
 				rv=RC_SERVFAIL;
 				goto free_recvbuf_return;
 			}
+            DEBUG_MSG("nbuf=%s name=%s\n", nbuf, name);
 			if(!rhnicmp(nbuf,name)) {
 				DEBUG_PDNSDA_MSG("Answer from %s does not match query.\n",
 						 PDNSDA2STR(PDNSD_A(st)));
@@ -2051,6 +2052,15 @@ struct qhintnode_s {
 	struct qhintnode_s  *next;
 };
 /* typedef struct qhintnode_s qhintnode_t; */  /* Already defined in dns_query.h */
+typedef struct {
+    query_stat_array *q;
+    unsigned char qname[DNSNAMEBUFSIZE];
+    int thint;
+    int hops;
+    qstatnode_t *qslist;
+    qhintnode_t *qhlist;
+    unsigned char c_soa;
+} rr_cache_update_thread_t;
 
 static int auth_ok(query_stat_array q, const unsigned char *name, int thint, dns_cent_t *ent,
 		   int hops, qstatnode_t *qslist, qhintnode_t *qhlist,
@@ -3460,6 +3470,27 @@ return_rc:
 }
 
 
+static void *rr_cache_update_thread(void *cdata){
+    dns_cent_t *ent;
+    rr_cache_update_thread_t rdata = *((rr_cache_update_thread_t *)cdata); 
+    query_stat_array q = rdata.q?*(rdata.q):NULL;
+    const unsigned char* name = rdata.qname;
+    int thint = rdata.thint;
+    int hops = rdata.hops;
+    qstatnode_t *qslist = rdata.qslist;
+    qhintnode_t *qhlist = rdata.qhlist;
+    unsigned char *c_soa = &(rdata.c_soa);
+
+    DEBUG_MSG("rr_cache_update_thread: Trying name servers.\n");
+    if (q)
+        p_recursive_query(q,name,thint, &ent,NULL,hops,qslist,qhlist,c_soa);
+    else
+        p_dns_resolve(name,thint, &ent,hops,qhlist,c_soa);
+    DEBUG_MSG("rr_cache_update_thread: update cache done.\n");
+
+    free(cdata);
+    free(ent);
+}
 /*
  * Resolve records for name into dns_cent_t, type thint.
  * q is the set of servers to query from. Set q to NULL if you want to ask the servers registered with pdnsd.
@@ -3513,54 +3544,66 @@ static int p_dns_cached_resolve(query_stat_array q, const unsigned char *name, i
 			goto cleanup_return;
 		}
 	}
+
+
 	if (rc!=RC_CACHED) {
-        if(global.reply_ghost_cache) {
-            #ifndef REPLY_GHOST_CACHE_H
-            #define REPLY_GHOST_CACHE_H
-            #endif
-        }
-#ifdef REPLY_GHOST_CACHE_H
-    pid_t pid = fork();
-    if(pid == 0){
-#endif
-        dns_cent_t *ent;
-        DEBUG_MSG("Trying name servers.\n");
-        if (q)
-            rc=p_recursive_query(q,name,thint, &ent,NULL,hops,qslist,qhlist,c_soa);
-        else
-            rc=p_dns_resolve(name,thint, &ent,hops,qhlist,c_soa);
-#ifdef REPLY_GHOST_CACHE_H
-        if (cached) {
-            free_cent(cached  DBG1);
-            pdnsd_free(cached);
-        }
-        exit(1);
-#endif
-        if(rc==RC_OK || rc==RC_CACHED || rc==RC_STALE) {
-            if (cached) {
-                free_cent(cached  DBG1);
-                pdnsd_free(cached);
+        if(global.reply_ghost_cache && rc==RC_STALE) {
+            rr_cache_update_thread_t *data = (rr_cache_update_thread_t *)malloc(sizeof(rr_cache_update_thread_t));
+            memset(data, 0, sizeof(rr_cache_update_thread_t));
+            pthread_t gcu;
+            if(q) {
+                data->q = (query_stat_array *) malloc(sizeof(query_stat_array));
+                memcpy(data->q, q, sizeof(query_stat_array));
             }
-            cached=ent;
+            strncpy(data->qname, name, strlen(name));
+            data->thint = thint;
+            data->hops = hops;
+            if(qhlist) {
+                data->qhlist = (qhintnode_t *)malloc(sizeof(qhintnode_t));
+                memcpy(data->qhlist, qhlist, sizeof(qhintnode_t));
+            }
+            if(qslist) {
+                data->qslist = (qstatnode_t *)malloc(sizeof(qstatnode_t));
+                memcpy(data->qslist, qslist, sizeof(qstatnode_t));
+            }
+            data->c_soa = *c_soa;
+            int err;
+            err=pthread_create(&gcu,&attr_detached,rr_cache_update_thread, (void *)data);
+            if(err!=0){
+                rc=RC_STALE;
+                log_warn("pthread_create failed: %s",strerror(err));
+            }else{
+                rc==RC_CACHED;
+                DEBUG_MSG("Setting ghost cache ttl = 0.\n")
+                time_t ttl = global.ghost_cache_ttl;
+                rc=RC_CACHED;
+                set_all_flags_ttl(&flags, &ttl, cached);
+                DEBUG_MSG("Setting ghost cache ttl = 0 done.\n")
+            }
+        }else{
+            dns_cent_t *ent;
+            DEBUG_MSG("Trying name servers.\n");
+            if (q)
+                rc=p_recursive_query(q,name,thint, &ent,NULL,hops,qslist,qhlist,c_soa);
+            else
+                rc=p_dns_resolve(name,thint, &ent,hops,qhlist,c_soa);
+            if(rc==RC_OK || rc==RC_CACHED || rc==RC_STALE) {
+                if (cached) {
+                    free_cent(cached  DBG1);
+                    pdnsd_free(cached);
+                }
+                cached=ent;
+            }
+            else if (rc==RC_SERVFAIL && cached && (flags&CF_NOPURGE)) {
+                /* We could not get a new record, but we have a timed-out cached one
+                with the nopurge flag set. This means that we shall use it even
+                if timed out when no new one is available*/
+                DEBUG_MSG("Falling back to cached record.\n");
+                rc=RC_STALE;
+            }
+            else
+                goto cleanup_return;
         }
-        else if (rc==RC_SERVFAIL && cached && (flags&CF_NOPURGE)) {
-            /* We could not get a new record, but we have a timed-out cached one
-            with the nopurge flag set. This means that we shall use it even
-            if timed out when no new one is available*/
-            DEBUG_MSG("Falling back to cached record.\n");
-            rc=RC_STALE;
-        }
-        else
-            goto cleanup_return;
-#ifdef REPLY_GHOST_CACHE_H
-    }else if(pid < 0){
-        DEBUG_MSG("fork() error.\n");
-        rc=RC_SERVFAIL;
-		goto cleanup_return;
-    }
-    rc=RC_CACHED;
-    
-#endif
 	} else {
 		DEBUG_MSG("Using cached record.\n");
 	}

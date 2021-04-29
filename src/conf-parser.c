@@ -928,6 +928,13 @@ int confparse(FILE* in, char *prestr, globparm_t *global, servparm_array *server
 	    SCAN_STRING_LIST(&global->deleg_only_zones,p,strbuf,len,zone_add)
 	    break;
 
+      case REPLY_GHOST_CACHE:
+        ASSIGN_ON_OFF(global->reply_ghost_cache, p,C_ON,"bad qualifier in reply_ghost_cache= option.");
+        break;
+      case GHOST_CACHE_TTL:
+        SCAN_TIMESECS(global->ghost_cache_ttl,p,"ghost_cache_ttl option");
+        break;
+
 	  default: /* we should never get here */
 	    goto internal_parse_error;
 	  } /* end of switch(option) */

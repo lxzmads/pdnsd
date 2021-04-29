@@ -175,7 +175,8 @@ inline static time_t ans_ttl(rr_set_t *rrset, time_t queryts)
 		time_t tpassed= queryts - rrset->ts;
 		if(tpassed<0) tpassed=0;
 		ttl -= tpassed;
-		if(ttl<0) ttl=0;
+        DEBUG_MSG("ts=%ld qts=%ld ttl=%ld\n", rrset->ts, queryts, ttl);
+		if(ttl<0) ttl = global.ghost_cache_ttl;
 	}
 	return ttl;
 }
