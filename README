@@ -1,3 +1,6 @@
+Add feature called `reply ghost cache`, which is inspired by `smartdns` project's `reply expired cache`. Yes it's just another name and implemetation integrated into `pdnsd`. XD. Enjoy!
+Update: 29 April 2021 by Mads
+
 You can find the documentation for pdnsd in the doc/ directory. The html
 documentation (which I recommend) is in the doc/html/ subdirectory.
 The pure text documentation (which is generated automatically from the 
